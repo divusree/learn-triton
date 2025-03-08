@@ -4,5 +4,6 @@ I am currently learning Triton and I am brushing up on C to read CUDA code. It i
 
 ## Kernels
 
-- `addition/addition.py`: Has 1D and 2D matrix addition `add_1D` and `add_2D` respectively.
-- `multiplication/multiplication.py`: ongoing - currently contains a kernel for 1D vector accumulated sum `dot_sum`. will be using this for dot product after elementwise multiplication.
+- `addition/addition.py`: Has 1D and 2D matrix addition `add_1D` and `add_2D` respectively. 
+- `addition/sumvec.py`: adds all the elements in a 1D vector with `sum1D`.
+- `multiplication/multiplication.py`: performs matrix multiplication between 2 2D matrices with `matmul`. 
