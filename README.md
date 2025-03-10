@@ -11,7 +11,7 @@ I am currently learning Triton to build an optimised BERT model [(cuBERT)](https
 
 ## Kernels to add
 
-- Extend Matrix multiplication to handle batches of matrices
+- Extend Matrix multiplication to handle batches of matrices, ref: [(pytorch doc)](https://pytorch.org/docs/stable/generated/torch.bmm.html) 
 - Matrix transpose
 - Online softmax
 - Layer Norm
