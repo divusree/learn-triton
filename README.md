@@ -7,7 +7,7 @@ I am currently learning Triton to build an optimised BERT model [(cuBERT)](https
 
 - `addition/addition.py`: Has 1D and 2D matrix addition `add_1D` and `add_2D` respectively. 
 - `addition/sumvec.py`: adds all the elements in a 1D vector with `sum1D`.
-- `multiplication/multiplication.py`: performs matrix multiplication between 2 2D matrices with `matmul`. 
+- `multiplication/multiplication.py`: performs matrix multiplication between 2 2D matrices with `matmul`. There is a kernel for matmul with row major ordering (naive). ongoing - grouped ordering.
 
 ## Kernels to add
 
