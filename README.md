@@ -7,11 +7,11 @@ I am currently learning Triton to build an optimised BERT model [(cuBERT)](https
 
 - `addition/addition.py`: Has 1D and 2D matrix addition `add_1D` and `add_2D` respectively. 
 - `addition/sumvec.py`: adds all the elements in a 1D vector with `sum1D`.
-- `multiplication/multiplication.py`: performs matrix multiplication between 2 2D matrices with `matmul`. There is a kernel for matmul with row major ordering (naive). ongoing - grouped ordering.
+- `multiplication/multiplication.py`: performs matrix multiplication between 2 2D matrices with `matmul`. There is a kernel for matmul with super-grouped block matmul (and col major ordering). works in both fp16 and fp32.
 
 ## Kernels to add
 
-- Extend Matrix multiplication to handle batches of matrices, ref: [(pytorch doc)](https://pytorch.org/docs/stable/generated/torch.bmm.html) 
+- Extend Matrix multiplication to handle batches of matrices, ref: [pytorch doc](https://pytorch.org/docs/stable/generated/torch.bmm.html) 
 - Matrix transpose
 - Online softmax
 - Layer Norm
