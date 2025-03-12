@@ -88,13 +88,11 @@ def batch_matmul_kernel(
     offset_k =  tl.arange(0, BLOCK_SIZE_K)
     offset_yn = (pid_n * BLOCK_SIZE_N + tl.arange(0, BLOCK_SIZE_N)) % N
 
-
     x_ptr += pid_b * stride_xb + offset_xm[:,None] * stride_xm +  offset_k[None,:]*stride_xk
     y_ptr += pid_b * stride_yb +  offset_k[:,None] * stride_yk + offset_yn[None,:] *stride_yn
 
     accumulator = tl.zeros((BLOCK_SIZE_M, BLOCK_SIZE_N), dtype = tl.float32)
     for k in range(0, tl.cdiv(K, BLOCK_SIZE_K)):
-
         x = tl.load(x_ptr, mask = offset_k [None, :] < K - k * BLOCK_SIZE_K, other = 0.0)
         y = tl.load(y_ptr, mask = offset_k[:,None] < K - k * BLOCK_SIZE_K, other = 0.0)            
         accumulator = tl.dot(x, y, accumulator)
@@ -102,15 +100,14 @@ def batch_matmul_kernel(
         # advance to next k block 
         x_ptr += BLOCK_SIZE_K *  stride_xk
         y_ptr += BLOCK_SIZE_K *  stride_yk
-
         
     accumulator = accumulator.to(tl.float16)
     offset_om = pid_m * BLOCK_SIZE_M + tl.arange(0, BLOCK_SIZE_M)
     offset_on = pid_n * BLOCK_SIZE_N + tl.arange(0, BLOCK_SIZE_N)
-    output_offset = stride_ob +  offset_om[:,None] *stride_om + offset_on[None, :] *stride_on
+    output_offset = pid_b * stride_ob +  offset_om[:,None] *stride_om + offset_on[None, :] *stride_on
     output_mask =  (offset_om[:,None] < M) & ( offset_on[None, :] < N)
-
     tl.store(output_ptr + output_offset, accumulator, mask = output_mask)
+    
 def matmul(x: torch.Tensor, y: torch.Tensor, dtype = None):
     B, M , K = x.shape
     B1, K1, N = y.shape
