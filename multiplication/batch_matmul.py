@@ -81,8 +81,7 @@ def batch_matmul_kernel(
 
     # strides for the M, K and N dim. 
     # A[b, i, j] = b * stride_Ab  + i *stride_Am + j * stride_An
-    # &A[m : m+BLOCK_SIZE_M, k:k+BLOCK_SIZE_K] =  a_ptr + (m : m+BLOCK_SIZE_M)*A.stride(0) + (k : k+BLOCK_SIZE_K)*A.stride(1);
-    # &B[k : k+BLOCK_SIZE_K, n:n+BLOCK_SIZE_N] =  b_ptr + (k : k+BLOCK_SIZE_K)*B.stride(0) + (n : n+BLOCK_SIZE_N)*B.stride(1);
+    # &A[b, m : m+BLOCK_SIZE_M, k:k+BLOCK_SIZE_K] =  a_ptr + A.stride(0) + (m : m+BLOCK_SIZE_M)*A.stride(1) + (k : k+BLOCK_SIZE_K)*A.stride(2);
     offset_xm = (pid_m * BLOCK_SIZE_M + tl.arange(0, BLOCK_SIZE_M)) % M
     offset_k =  tl.arange(0, BLOCK_SIZE_K)
     offset_yn = (pid_n * BLOCK_SIZE_N + tl.arange(0, BLOCK_SIZE_N)) % N
@@ -123,12 +122,19 @@ def matmul(x: torch.Tensor, y: torch.Tensor, dtype = None):
                         y.stride(0), y.stride(1), y.stride(2), 
                         output.stride(0), output.stride(1), output.stride(2),
 
-                        # BLOCK_SIZE for all dims
                         BLOCK_SIZE_B = 32, 
-                        BLOCK_SIZE_M = 32, 
-                        BLOCK_SIZE_N = 32, 
-                        BLOCK_SIZE_K = 32, 
-                        # GROUP_SIZE along M
+                        # uncomment if not autotuning
+                        # BLOCK_SIZE_M = 32, 
+                        # BLOCK_SIZE_N = 32, 
+                        # BLOCK_SIZE_K = 32, 
+                        # GROUP_SIZE along M dim
                         GROUP_SIZE_M = 8
                         )
     return output
+
+# dtype = torch.float32
+# x = torch.rand((64, 1024, 64), device = 'cuda', dtype = dtype)
+# y = torch.rand((64, 64, 384), device = 'cuda', dtype = dtype)
+# output_triton = matmul(x, y, dtype = dtype).to(torch.float16)
+# output_torch = torch.matmul(x, y).to(torch.float16)
+# print(f"Are the results close? {torch.allclose(output_triton, output_torch, atol=1e-2, rtol=0)}")
