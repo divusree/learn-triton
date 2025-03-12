@@ -65,19 +65,21 @@ def batch_matmul_kernel(
                 GROUP_SIZE_M: tl.constexpr):
 
     # with batch matmul we have to always start at axis = 1 for rows. 
-    pid = tl.program_id(axis=1)
-    num_pid_m = tl.cdiv(M, BLOCK_SIZE_M)
-    num_pid_n = tl.cdiv(N, BLOCK_SIZE_N)
-    num_pid_in_group = GROUP_SIZE_M * num_pid_n
-    group_id = pid // num_pid_in_group
-    first_pid_m = group_id * GROUP_SIZE_M
-    group_size_m = min(num_pid_m - first_pid_m, GROUP_SIZE_M)
-    pid_m = first_pid_m + ((pid % num_pid_in_group) % group_size_m)
-    pid_n = (pid % num_pid_in_group) // group_size_m    
+    # pid = tl.program_id(axis=1)
+    # num_pid_m = tl.cdiv(B, BLOCK_SIZE_B)
+    # num_pid_m = tl.cdiv(M, BLOCK_SIZE_M)
+    # num_pid_n = tl.cdiv(N, BLOCK_SIZE_N)
+    # num_pid_in_group = GROUP_SIZE_M * num_pid_n
+    # group_id = pid // num_pid_in_group
+    # first_pid_m = group_id * GROUP_SIZE_M
+    # group_size_m = min(num_pid_m - first_pid_m, GROUP_SIZE_M)
+    # pid_m = first_pid_m + ((pid % num_pid_in_group) % group_size_m)
+    # pid_n = (pid % num_pid_in_group) // group_size_m    
 
     # comment the above and uncomment below for non grouped matmul
-    # pid_m = tl.program_id(axis=1) 
-    # pid_n = tl.program_id(axis=2) 
+    pid_b = tl.program_id(axis=0) 
+    pid_m = tl.program_id(axis=1) 
+    pid_n = tl.program_id(axis=2) 
 
     # strides for the M, K and N dim. 
     # A[b, i, j] = b * stride_Ab  + i *stride_Am + j * stride_An
@@ -86,19 +88,20 @@ def batch_matmul_kernel(
     offset_k =  tl.arange(0, BLOCK_SIZE_K)
     offset_yn = (pid_n * BLOCK_SIZE_N + tl.arange(0, BLOCK_SIZE_N)) % N
 
-    x_ptr +=  stride_xb + offset_xm[:,None] * stride_xm +  offset_k[None,:]*stride_xk
-    y_ptr += stride_yb +  offset_k[:,None] * stride_yk + offset_yn[None,:] *stride_yn
+
+    x_ptr += pid_b * stride_xb + offset_xm[:,None] * stride_xm +  offset_k[None,:]*stride_xk
+    y_ptr += pid_b * stride_yb +  offset_k[:,None] * stride_yk + offset_yn[None,:] *stride_yn
 
     accumulator = tl.zeros((BLOCK_SIZE_M, BLOCK_SIZE_N), dtype = tl.float32)
     for k in range(0, tl.cdiv(K, BLOCK_SIZE_K)):
 
-        # load and compute. mask: k should not exceed the bounds of the current block (maybe)
-        mask_x = (offset_xm[:,None] < M) & ( offset_k[None, :]  < K)
-        mask_y = ( offset_k[:, None] < K ) & ( offset_yn[None, :] < N)
-
-        x = tl.load(x_ptr, mask = mask_x, other = 0.0)
-        y = tl.load(y_ptr, mask = mask_y, other = 0.0)    
+        x = tl.load(x_ptr, mask = offset_k [None, :] < K - k * BLOCK_SIZE_K, other = 0.0)
+        y = tl.load(y_ptr, mask = offset_k[:,None] < K - k * BLOCK_SIZE_K, other = 0.0)            
         accumulator = tl.dot(x, y, accumulator)
+        
+        # advance to next k block 
+        x_ptr += BLOCK_SIZE_K *  stride_xk
+        y_ptr += BLOCK_SIZE_K *  stride_yk
 
         
     accumulator = accumulator.to(tl.float16)
@@ -122,7 +125,7 @@ def matmul(x: torch.Tensor, y: torch.Tensor, dtype = None):
                         y.stride(0), y.stride(1), y.stride(2), 
                         output.stride(0), output.stride(1), output.stride(2),
 
-                        BLOCK_SIZE_B = 32, 
+                        BLOCK_SIZE_B = 1, # 1 batch per block 
                         # uncomment if not autotuning
                         # BLOCK_SIZE_M = 32, 
                         # BLOCK_SIZE_N = 32, 
