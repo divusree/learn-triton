@@ -64,31 +64,25 @@ def batch_matmul_kernel(
                 # GROUP_SIZE for all dims - for simplicity
                 GROUP_SIZE_M: tl.constexpr):
 
-    # recall previously we had row major ordering and 
-    # pid_m = tl.program_id(axis = 0) 
-    # pid_n = tl.program_id(axis = 1) 
+    # with batch matmul we have to always start at axis = 1 for rows. 
+    pid = tl.program_id(axis=1)
+    num_pid_m = tl.cdiv(M, BLOCK_SIZE_M)
+    num_pid_n = tl.cdiv(N, BLOCK_SIZE_N)
+    num_pid_in_group = GROUP_SIZE_M * num_pid_n
+    group_id = pid // num_pid_in_group
+    first_pid_m = group_id * GROUP_SIZE_M
+    group_size_m = min(num_pid_m - first_pid_m, GROUP_SIZE_M)
+    pid_m = first_pid_m + ((pid % num_pid_in_group) % group_size_m)
+    pid_n = (pid % num_pid_in_group) // group_size_m    
 
-    # we get new pid_m and pid_n after we group pids together
-    pid = tl.program_id(axis=0)
-    # num_pid_b = tl.cdiv(K, BLOCK_SIZE_B)
-    # num_pid_m = tl.cdiv(M, BLOCK_SIZE_M)
-    # num_pid_n = tl.cdiv(N, BLOCK_SIZE_N)
+    # comment the above and uncomment below for non grouped matmul
+    # pid_m = tl.program_id(axis=1) 
+    # pid_n = tl.program_id(axis=2) 
 
-    # not sure about this part. dont fully understand it
-    # num_pid_in_group = GROUP_SIZE_M * num_pid_n
-    # group_id = pid // num_pid_in_group
-    # first_pid_m = group_id * GROUP_SIZE_M
-    # group_size_m = min(num_pid_m - first_pid_m, GROUP_SIZE_M)
-    # pid_m = first_pid_m + ((pid % num_pid_in_group) % group_size_m)
-    # pid_n = (pid % num_pid_in_group) // group_size_m    
-
-    pid_m = tl.program_id(axis=1) 
-    pid_n = tl.program_id(axis=2) 
-    # the rest after getting pid_m and pid_n are as before
+    # strides for the M, K and N dim. 
     # A[b, i, j] = b * stride_Ab  + i *stride_Am + j * stride_An
     # &A[m : m+BLOCK_SIZE_M, k:k+BLOCK_SIZE_K] =  a_ptr + (m : m+BLOCK_SIZE_M)*A.stride(0) + (k : k+BLOCK_SIZE_K)*A.stride(1);
     # &B[k : k+BLOCK_SIZE_K, n:n+BLOCK_SIZE_N] =  b_ptr + (k : k+BLOCK_SIZE_K)*B.stride(0) + (n : n+BLOCK_SIZE_N)*B.stride(1);
-
     offset_xm = (pid_m * BLOCK_SIZE_M + tl.arange(0, BLOCK_SIZE_M)) % M
     offset_k =  tl.arange(0, BLOCK_SIZE_K)
     offset_yn = (pid_n * BLOCK_SIZE_N + tl.arange(0, BLOCK_SIZE_N)) % N
@@ -96,7 +90,6 @@ def batch_matmul_kernel(
     x_ptr +=  stride_xb + offset_xm[:,None] * stride_xm +  offset_k[None,:]*stride_xk
     y_ptr += stride_yb +  offset_k[:,None] * stride_yk + offset_yn[None,:] *stride_yn
 
-    # print("offset_y.shape", offset_y.shape)
     accumulator = tl.zeros((BLOCK_SIZE_M, BLOCK_SIZE_N), dtype = tl.float32)
     for k in range(0, tl.cdiv(K, BLOCK_SIZE_K)):
 
@@ -104,26 +97,17 @@ def batch_matmul_kernel(
         mask_x = (offset_xm[:,None] < M) & ( offset_k[None, :]  < K)
         mask_y = ( offset_k[:, None] < K ) & ( offset_yn[None, :] < N)
 
-        # print("mask_y.shape", mask_y.shape)
-        # print("y.shape", y.shape)
         x = tl.load(x_ptr, mask = mask_x, other = 0.0)
         y = tl.load(y_ptr, mask = mask_y, other = 0.0)    
         accumulator = tl.dot(x, y, accumulator)
 
         
     accumulator = accumulator.to(tl.float16)
-    # print("accumulator", accumulator)
-
-    # offset_ob = pid_b * BLOCK_SIZE_B + tl.arange(0, BLOCK_SIZE_B)
     offset_om = pid_m * BLOCK_SIZE_M + tl.arange(0, BLOCK_SIZE_M)
     offset_on = pid_n * BLOCK_SIZE_N + tl.arange(0, BLOCK_SIZE_N)
-    # output_offset = offset_b[:,None,None] * stride_ob + offset_om[:,None] *stride_om + offset_on[None, :] *stride_on
-    # output_mask = (offset_b[:,None,None] < B) & (offset_om[:,None] < M) & ( offset_on[None, :] < N)
     output_offset = stride_ob +  offset_om[:,None] *stride_om + offset_on[None, :] *stride_on
     output_mask =  (offset_om[:,None] < M) & ( offset_on[None, :] < N)
 
-    # print("buncha shapes innit",  [output_offset.shape, accumulator.shape, output_mask.shape])
-    # print("loads", tl.load(output_ptr + output_offset))
     tl.store(output_ptr + output_offset, accumulator, mask = output_mask)
 def matmul(x: torch.Tensor, y: torch.Tensor, dtype = None):
     B, M , K = x.shape
