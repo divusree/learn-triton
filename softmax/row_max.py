@@ -25,10 +25,10 @@ def rowmax(x: torch.Tensor):
     M, N = x.shape
     output = torch.zeros((x.shape[0], 1), device = 'cuda', dtype = torch.float32)
     assert x.is_cuda and output.is_cuda
-    n = x.numel()
-    grid = lambda meta: (triton.cdiv(output.shape[0], meta['BLOCK_SIZE_M']), triton.cdiv(output.shape[1], meta['BLOCK_SIZE_N']))
+    grid = lambda meta: (triton.cdiv(M, meta['BLOCK_SIZE_M']), triton.cdiv(N, meta['BLOCK_SIZE_N']))
     rmax_kernel[grid](x, output, M, N, 
                     x.stride(0), x.stride(1), 
                     output.stride(0), output.stride(1), 
                     BLOCK_SIZE_M = 1,
                     BLOCK_SIZE_N = 32)   
+    return output
