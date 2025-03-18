@@ -3,7 +3,7 @@ import triton.language as tl
 import torch
 import math
 @triton.jit
-def fa_kernel(q_ptr, k_ptr, v_ptr, output_ptr, L_ptr, m_ptr, l_ptr, P_ptr,
+def fa_kernel(q_ptr, k_ptr, v_ptr, output_ptr, L_ptr, qk_scale,
                 M: tl.constexpr , N: tl.constexpr, 
                 stride_qm, stride_qn, # all of the matrices have the same stride
                 stride_om, stride_on, 
@@ -31,28 +31,23 @@ def fa_kernel(q_ptr, k_ptr, v_ptr, output_ptr, L_ptr, m_ptr, l_ptr, P_ptr,
 
     for j in range(0, tl.cdiv(M, BLOCK_SIZE_M)):
         K = tl.load(k_ptr, mask = (offset_row_block[:,None] < M - j *BLOCK_SIZE_M), other = 0) # has to be transposed - check if .T is fine or if stride does the trick
-        # print("", K)
         V = tl.load(v_ptr, mask = (offset_row_block[:,None] < M - j *BLOCK_SIZE_M), other = 0) 
-
-        S = tl.dot(Q,K.trans(1,0)) / tl.sqrt_rn(float(N))
-        # print("S",S)
+        S = tl.dot(Q,K.trans(1,0)) * qk_scale
         prev_m = m
         m = tl.maximum(tl.max(S, axis = 1, keep_dims = True), prev_m)
         P = tl.exp(S - m)
         corr = tl.exp(prev_m - m)
         l = corr * l + tl.sum(P, axis = 1, keep_dims = True) 
         O = (corr) * O + tl.dot(P, V)
-        tl.store(P_ptr , P)
         k_ptr += BLOCK_SIZE_M * stride_qm
         v_ptr += BLOCK_SIZE_M * stride_qm
-        P_ptr += BLOCK_SIZE_N * stride_qn
+
     O = (1/l) * O
     L = m + tl.log(l)
     output_offset = offset_row_block[:,None] * stride_om + offset_col *stride_on
     tl.store(output_ptr + output_offset, O) #, mask = (offset_row[:,None] < M) & ((pid_col * N + tl.arange(0, N))[None,:] < N) )
     tl.store(L_ptr + offset_row_block[:,None], L)
-    tl.store(m_ptr + offset_row_block[:,None], m)
-    tl.store(l_ptr + offset_row_block[:,None], l)
+
 
 
 def flash_attention(Q: torch.Tensor, K: torch.Tensor, V: torch.Tensor):
@@ -62,17 +57,15 @@ def flash_attention(Q: torch.Tensor, K: torch.Tensor, V: torch.Tensor):
     M, N = V.shape
     output = torch.zeros((M, N), device = 'cuda', dtype = torch.float32)
     L = torch.zeros((M, 1), device = 'cuda', dtype = torch.float32)
-    m = torch.zeros((M, 1), device = 'cuda', dtype = torch.float32)
-    l = torch.zeros((M, 1), device = 'cuda', dtype = torch.float32)
-    P = torch.zeros((M, N), device = 'cuda', dtype = torch.float32)
+    qk_scale = math.sqrt(N)
     assert Q.is_cuda and K.is_cuda and V.is_cuda 
     grid = lambda meta: (triton.cdiv(M, meta['BLOCK_SIZE_M']), triton.cdiv(N, meta['BLOCK_SIZE_N']))
-    fa_kernel[grid](Q, K, V, output, L, m, l, P, 
+    fa_kernel[grid](Q, K, V, output, L, qk_scale,
                     M, N,      
                     Q.stride(0), Q.stride(1), 
                     output.stride(0), output.stride(1), 
                     BLOCK_SIZE_M = 32,
                     BLOCK_SIZE_N = triton.next_power_of_2(N))   
   
-    return output, L, m , l, P
+    return output, L
 
