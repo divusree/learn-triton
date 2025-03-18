@@ -1,2 +1,4 @@
 # created by virtualenv automatically
 *ipynb
+__pycache__
+*/__pycache__

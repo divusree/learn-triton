@@ -1,9 +1,6 @@
 import triton
 import triton.language as tl
 import torch
-import triton
-import triton.language as tl
-import torch
 @triton.jit
 def softmax_kernel(x_ptr,output_ptr,
                     M: tl.constexpr , N: tl.constexpr , 
