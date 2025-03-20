@@ -3,7 +3,7 @@ import triton.language as tl
 import torch
 import math
 @triton.jit
-def fa_kernel(q_ptr, k_ptr, v_ptr, output_ptr, L_ptr, qk_scale,
+def fa_fwd_inner_kernel(q_ptr, k_ptr, v_ptr, output_ptr, L_ptr, qk_scale,
                 M: tl.constexpr , N: tl.constexpr, 
                 stride_qm, stride_qn, # all of the matrices have the same stride
                 stride_om, stride_on, 
@@ -60,7 +60,7 @@ def flash_attention(Q: torch.Tensor, K: torch.Tensor, V: torch.Tensor):
     qk_scale = math.sqrt(N)
     assert Q.is_cuda and K.is_cuda and V.is_cuda 
     grid = lambda meta: (triton.cdiv(M, meta['BLOCK_SIZE_M']), triton.cdiv(N, meta['BLOCK_SIZE_N']))
-    fa_kernel[grid](Q, K, V, output, L, qk_scale,
+    fa_fwd_inner_kernel[grid](Q, K, V, output, L, qk_scale,
                     M, N,      
                     Q.stride(0), Q.stride(1), 
                     output.stride(0), output.stride(1), 
