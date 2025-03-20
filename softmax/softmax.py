@@ -19,19 +19,19 @@ def softmax_kernel(
     pid_m = tl.program_id(axis=0)
     pid_n = tl.program_id(axis=1)
     offset_xm = (pid_m * BLOCK_SIZE_M + tl.arange(0, BLOCK_SIZE_M)) % M
-    offset_xn = (pid_n * BLOCK_SIZE_N + tl.arange(0, BLOCK_SIZE_N)) % N
+    offset_xn = (pid_n * BLOCK_SIZE_N + tl.arange(0, BLOCK_SIZE_N)) % BLOCK_SIZE_N
     offset = offset_xm[:, None] * stride_xm + offset_xn[None, :] * stride_xn
     x_ptr += offset
     mask = (offset_xm[:, None] < M) & (offset_xn[None, :] < N)
     # notation is from flash attrntion 2 paper
-    s = tl.load(x_ptr, mask=mask)
+    s = tl.load(x_ptr, mask=mask, other = -float('inf'))
     m = tl.max(s, axis=1, keep_dims=True)
     p = tl.exp(s - m)
     l = tl.sum(p, axis=1, keep_dims=True)  # correction factor = 0
 
     output_offset = (
         offset_xm[:, None] * stride_om
-        + (pid_n * N + tl.arange(0, N))[None, :] * stride_on
+        + (pid_n * BLOCK_SIZE_N + tl.arange(0, BLOCK_SIZE_N))[None, :] * stride_on
     )
     tl.store(output_ptr + output_offset, p / l, mask=mask)
 
