@@ -57,8 +57,8 @@ def layer_norm(x: torch.Tensor):
 
 @triton.jit
 def batched_layer_norm_kernel(x_ptr,output_ptr, eps,
-                B, H, M, N: tl.constexpr,
-                stride_xb, stride_xh, stride_xm, stride_xn,
+                B, M, N: tl.constexpr,
+                stride_xb, stride_xm, stride_xn,
                 BLOCK_SIZE_M: tl.constexpr,
                 BLOCK_SIZE_N: tl.constexpr
                 ):
@@ -74,13 +74,11 @@ def batched_layer_norm_kernel(x_ptr,output_ptr, eps,
     # y_custom = (y - mean) / torch.sqrt(variance + eps)
     # y_custom
 
-    pid_batch = tl.program_id(axis=0) 
+
+    pid_b = tl.program_id(axis=0) 
     pid_m = tl.program_id(axis=1)
 
-    pid_b = pid_batch // H
-    pid_h = pid_batch % H
-
-    offset = pid_b * stride_xb + pid_h * stride_xh + (pid_m * BLOCK_SIZE_M + tl.arange(0, BLOCK_SIZE_M))[:,None] * stride_xm +  tl.arange(0, BLOCK_SIZE_N)[None,:]*stride_xn
+    offset = pid_b * stride_xb + (pid_m * BLOCK_SIZE_M + tl.arange(0, BLOCK_SIZE_M))[:,None] * stride_xm +  tl.arange(0, BLOCK_SIZE_N)[None,:]*stride_xn
     x_ptr += offset
     mean = tl.zeros((BLOCK_SIZE_M, 1), dtype = tl.float32 )
     for n in range (0, tl.cdiv(N, BLOCK_SIZE_N)):
@@ -106,13 +104,13 @@ def batched_layer_norm_kernel(x_ptr,output_ptr, eps,
         tl.store(output_ptr  + offset_col ,  output, mask = offset_col < N)
 
 def batched_layer_norm(x: torch.Tensor):
-    B, H, M , N = x.shape
+    B, M , N = x.shape
     output = torch.zeros_like(x,  device = 'cuda', dtype = torch.float32 )
     assert x.is_cuda and output.is_cuda
     eps = 1e-6
-    grid = lambda meta: (B*H, triton.cdiv(M, meta['BLOCK_SIZE_M']))
+    grid = lambda meta: (B, triton.cdiv(M, meta['BLOCK_SIZE_M']))
     batched_layer_norm_kernel[grid](x, output, eps,
-                    B, H, M , N,
+                    B, M , N,
                     *x.stride(),
                     BLOCK_SIZE_M = 32, 
                     BLOCK_SIZE_N = 32
