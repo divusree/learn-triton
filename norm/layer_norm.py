@@ -53,3 +53,68 @@ def layer_norm(x: torch.Tensor):
                     BLOCK_SIZE_N = 32
                     )
     return output
+
+
+@triton.jit
+def batched_layer_norm_kernel(x_ptr,output_ptr, eps,
+                B, H, M, N: tl.constexpr,
+                stride_xb, stride_xh, stride_xm, stride_xn,
+                BLOCK_SIZE_M: tl.constexpr,
+                BLOCK_SIZE_N: tl.constexpr
+                ):
+    # # calculate per batch
+    # # layer norm - happens over the columns/features of the tensor. we are normalising the features
+    # # output = gamma * (x_i - mu)/ sqrt(sig**2 + eps) + beta
+    # mean = torch.empty((M, 1))
+    # variance = torch.empty((M, 1))
+
+    # mean = y.mean(dim = -1, keepdim = True) # reduced across rows
+    # variance = torch.square(y - mean).mean(dim = -1, keepdim = True)
+    # eps = 1e-8
+    # y_custom = (y - mean) / torch.sqrt(variance + eps)
+    # y_custom
+
+    pid_batch = tl.program_id(axis=0) 
+    pid_m = tl.program_id(axis=1)
+
+    pid_b = pid_batch // H
+    pid_h = pid_batch % H
+
+    offset = pid_b * stride_xb + pid_h * stride_xh + (pid_m * BLOCK_SIZE_M + tl.arange(0, BLOCK_SIZE_M))[:,None] * stride_xm +  tl.arange(0, BLOCK_SIZE_N)[None,:]*stride_xn
+    x_ptr += offset
+    mean = tl.zeros((BLOCK_SIZE_M, 1), dtype = tl.float32 )
+    for n in range (0, tl.cdiv(N, BLOCK_SIZE_N)):
+        offset_col = n + (tl.arange(0, BLOCK_SIZE_N))[None, :] 
+        x = tl.load(x_ptr + offset_col , mask = offset_col < N, other = 0.0)   
+        mean += tl.sum(x, axis = -1, keep_dims = True) 
+    mean = tl.sum(mean, axis = -1, keep_dims = True) /M
+    
+    variance = tl.zeros((BLOCK_SIZE_M, 1), dtype = tl.float32 )
+    for n in range (0, tl.cdiv(N, BLOCK_SIZE_N)):
+        offset_col = n + (tl.arange(0, BLOCK_SIZE_N))[None, :] 
+        x = tl.load(x_ptr + offset_col , mask = offset_col < N, other = 0.0)    
+        variance += tl.sum((x- mean)*(x- mean), axis = -1, keep_dims = True)
+
+    variance = tl.sum(variance, axis = -1, keep_dims = True) /N
+    rstd = 1/tl.sqrt(variance + eps)
+
+    output_ptr += offset
+    for n in range (0, tl.cdiv(N, BLOCK_SIZE_N)):
+        offset_col = n + (tl.arange(0, BLOCK_SIZE_N))[None, :] 
+        x = tl.load(x_ptr + offset_col , mask = offset_col < N, other = 0.0)   
+        output = (x - mean) * rstd        
+        tl.store(output_ptr  + offset_col ,  output, mask = offset_col < N)
+
+def batched_layer_norm(x: torch.Tensor):
+    B, H, M , N = x.shape
+    output = torch.zeros_like(x,  device = 'cuda', dtype = torch.float32 )
+    assert x.is_cuda and output.is_cuda
+    eps = 1e-6
+    grid = lambda meta: (B*H, triton.cdiv(M, meta['BLOCK_SIZE_M']))
+    batched_layer_norm_kernel[grid](x, output, eps,
+                    B, H, M , N,
+                    *x.stride(),
+                    BLOCK_SIZE_M = 32, 
+                    BLOCK_SIZE_N = 32
+                    )
+    return output
