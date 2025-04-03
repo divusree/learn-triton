@@ -8,6 +8,7 @@ def fa_fwd_inner_kernel(q_ptr, k_ptr, v_ptr, output_ptr, L_ptr, qk_scale,
                 B: tl.constexpr, H: tl.constexpr, M: tl.constexpr, N: tl.constexpr,
                 stride_qb, stride_qh, stride_qm, stride_qn, # all of the matrices have the same stride
                 stride_ob, stride_oh, stride_om, stride_on, 
+                stride_Lb, stride_Lh, stride_Lm, stride_Ln, 
                 BLOCK_SIZE_M: tl.constexpr, 
                 BLOCK_SIZE_N: tl.constexpr 
             ):
@@ -47,9 +48,10 @@ def fa_fwd_inner_kernel(q_ptr, k_ptr, v_ptr, output_ptr, L_ptr, qk_scale,
 
     O = (1/l) * O
     L = m + tl.log(l)
-    output_offset =  pid_b * stride_ob + pid_h * stride_oh + offset_row_block[:,None] * stride_om + offset_col *stride_on
+    output_offset =  pid_b * stride_ob + pid_h * stride_oh + offset_row_block[:,None] * stride_om + offset_col[None,:] *stride_on
     tl.store(output_ptr + output_offset, O) 
-    tl.store(L_ptr + offset_row_block[:,None], L)
+    L_offset =  pid_b * stride_Lb + pid_h * stride_Lh + offset_row_block[:,None] * stride_Lm + offset_col[None,:] *stride_Ln
+    tl.store(L_ptr + L_offset, L)
 
 
 def fa_fwd_inner(Q: torch.Tensor, K: torch.Tensor, V: torch.Tensor):
@@ -63,6 +65,7 @@ def fa_fwd_inner(Q: torch.Tensor, K: torch.Tensor, V: torch.Tensor):
                     B, H, M, N,   
                     *Q.stride(), 
                     *output.stride(), 
+                    *L.stride(), 
                     BLOCK_SIZE_M = 32,
                     BLOCK_SIZE_N = triton.next_power_of_2(N))   
   
