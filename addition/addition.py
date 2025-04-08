@@ -67,3 +67,40 @@ def add_2D(x:torch.Tensor, y:torch.Tensor):
     grid = lambda meta: (triton.cdiv(nx, meta['BLOCK_SIZE']), triton.cdiv(ny, meta['BLOCK_SIZE'])) 
     addition2D_kernel[grid](x, y, output, nx, ny, BLOCK_SIZE = 32)
     return output
+
+@triton.jit
+def addition3D_kernel(
+        x_ptr, #ptr to first idx of x, just like in cpp
+        y_ptr,
+        output_ptr,
+        B, M, N, 
+        stride_xb,stride_xm, stride_xn,
+        BLOCK_SIZE_M: tl.constexpr, 
+        BLOCK_SIZE_N: tl.constexpr, 
+        GROUP_SIZE_M: tl.constexpr 
+        ):
+    pid_b = tl.program_id(axis=0) 
+    pid_m = tl.program_id(axis=1)
+    pid_n = tl.program_id(axis=2)
+
+    offset_xm = pid_m * BLOCK_SIZE_M + tl.arange(0, BLOCK_SIZE_M)
+    offset_xn = pid_n * BLOCK_SIZE_N + tl.arange(0, BLOCK_SIZE_N)
+    offset =  pid_b * stride_xb + offset_xm[:, None] * stride_xm + offset_xn[None, :] * stride_xn
+    mask = (offset_xm[:, None] < M) & (offset_xn[None, :] < N)
+    x = tl.load(x_ptr + offset, mask = mask, other = 0.0)
+    y = tl.load(y_ptr + offset, mask = mask, other = 0.0)
+    tl.store(output_ptr + offset, x + y, mask = mask)
+def add_3D(x:torch.Tensor, y:torch.Tensor):
+    # preallocate output
+    assert x.shape == y.shape
+    output = torch.empty_like(x, device = x.device, dtype = x.dtype)
+    assert x.is_cuda and y.is_cuda and output.is_cuda
+    B, M, N = output.shape
+
+    grid = lambda meta: (B, triton.cdiv(M, meta['BLOCK_SIZE_M']), triton.cdiv(N, meta['BLOCK_SIZE_N'])) 
+    addition3D_kernel[grid](x, y, output, 
+                                  B, M, N, 
+                                  *x.stride(),
+                                  BLOCK_SIZE_M = 32, BLOCK_SIZE_N = 32,
+                                  GROUP_SIZE_M = 8)
+    return output   
