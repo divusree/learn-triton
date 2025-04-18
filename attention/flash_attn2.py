@@ -3,77 +3,10 @@ import triton.language as tl
 import torch
 import math
 torch.set_printoptions(profile="full")
-@triton.jit
-def fa_fwd_inner_kernel(q_ptr, k_ptr, v_ptr, output_ptr, L_ptr, qk_scale,
-                B: tl.constexpr, H: tl.constexpr, M: tl.constexpr, N: tl.constexpr,
-                stride_qb, stride_qh, stride_qm, stride_qn, # all of the matrices have the same stride
-                stride_ob, stride_oh, stride_om, stride_on, 
-                stride_Lb, stride_Lh, stride_Lm, stride_Ln, 
-                BLOCK_SIZE_M: tl.constexpr, 
-                BLOCK_SIZE_N: tl.constexpr 
-            ):
-    pid_batch = tl.program_id(axis=0) 
-    pid_row = tl.program_id(axis=1)
-
-    pid_b = pid_batch // H
-    pid_h = pid_batch % H
-
-    offset_row_block = (pid_row * BLOCK_SIZE_M + tl.arange(0, BLOCK_SIZE_M)) % M
-    offset_col = tl.arange(0, BLOCK_SIZE_N) % BLOCK_SIZE_N
-    
-    offset = pid_b * stride_qb + pid_h * stride_qh + offset_row_block[:,None] * stride_qm + offset_col[None,:] *stride_qn
-    q_ptr += offset
-    mask = (offset_row_block[:,None] < M) & (offset_col[None, :] < N)
-    Q = tl.load(q_ptr, mask = mask, other = 0)
-    k_offset = pid_b * stride_qb + pid_h * stride_qh + offset_row_block[:,None] * stride_qm + offset_col[None,:] *stride_qn
-    k_ptr += k_offset # transposed K tensor by swapping the strides of the last 2 dimensions
-    v_ptr += offset
-
-    m = tl.full((BLOCK_SIZE_M, 1), value = -torch.inf, dtype = tl.float32) # axis = 1 gives me row wise values
-    l = tl.zeros((BLOCK_SIZE_M, 1), dtype = tl.float32)    
-    O = tl.zeros((BLOCK_SIZE_M, N), dtype = tl.float32)
-
-    for j in range(0, tl.cdiv(M, BLOCK_SIZE_M)):
-        K = tl.load(k_ptr, mask = (offset_row_block[:,None] < M - j *BLOCK_SIZE_M), other = 0) 
-        V = tl.load(v_ptr, mask = (offset_row_block[:,None] < M - j *BLOCK_SIZE_M), other = 0) 
-        S = tl.dot(Q,K) * qk_scale
-        prev_m = m
-        m = tl.maximum(tl.max(S, axis = -1, keep_dims = True), prev_m)
-        P = tl.exp(S - m)
-        corr = tl.exp(prev_m - m)
-        l = corr * l + tl.sum(P, axis = -1, keep_dims = True) 
-        O = (corr) * O + tl.dot(P, V, input_precision = 'ieee')
-        k_ptr += BLOCK_SIZE_M * stride_qn
-        v_ptr += BLOCK_SIZE_M * stride_qm
-
-    O = (1/l) * O
-    L = m + tl.log(l)
-    output_offset =  pid_b * stride_ob + pid_h * stride_oh + offset_row_block[:,None] * stride_om + offset_col[None,:] *stride_on
-    tl.store(output_ptr + output_offset, O) 
-    L_offset =  pid_b * stride_Lb + pid_h * stride_Lh + offset_row_block[:,None] * stride_Lm + offset_col[None,:] *stride_Ln
-    tl.store(L_ptr + L_offset, L)
-
-
-def fa_fwd_inner(Q: torch.Tensor, K: torch.Tensor, V: torch.Tensor):
-    B, H, M, N = Q.shape
-    output = torch.zeros_like(Q, device = 'cuda', dtype = torch.float32)
-    L = torch.zeros((B, H, M, 1), device = 'cuda', dtype = torch.float32)
-    qk_scale = math.sqrt(N)
-    assert Q.is_cuda and K.is_cuda and V.is_cuda 
-    grid = lambda meta: (B*H, triton.cdiv(M, meta['BLOCK_SIZE_M']))
-    fa_fwd_inner_kernel[grid](Q, K, V, output, L, qk_scale,
-                    B, H, M, N,   
-                    *Q.stride(), 
-                    *output.stride(), 
-                    *L.stride(), 
-                    BLOCK_SIZE_M = 32,
-                    BLOCK_SIZE_N = triton.next_power_of_2(N))   
-  
-    return output, L
 
 
 @triton.jit
-def fa_bwd_inner_kernel(q_ptr, k_ptr, v_ptr,
+def fa_bwd_kernel(q_ptr, k_ptr, v_ptr,
                         o_ptr, dO_ptr, L_ptr, qk_scale,
                         dQ_ptr, dK_ptr, dV_ptr, D_ptr, 
                         M: tl.constexpr , N: tl.constexpr, 
@@ -148,7 +81,7 @@ def fa_bwd_inner_kernel(q_ptr, k_ptr, v_ptr,
     tl.store(dV_ptr + offset, dV_j, mask = kv_mask)
 
 
-def fa_bwd_inner(Q: torch.Tensor, K: torch.Tensor, V: torch.Tensor,
+def fa_bwd(Q: torch.Tensor, K: torch.Tensor, V: torch.Tensor,
                  O: torch.Tensor, dO: torch.Tensor,
                  L: torch.Tensor):
     """
@@ -170,7 +103,7 @@ def fa_bwd_inner(Q: torch.Tensor, K: torch.Tensor, V: torch.Tensor,
     D = D.sum(dim = 1).reshape(M, 1)
 
     grid = lambda meta: (triton.cdiv(M, meta['BLOCK_SIZE_M']), 1)
-    fa_bwd_inner_kernel[grid](
+    fa_bwd_kernel[grid](
                             Q, K, V, 
                             O, dO, L, qk_scale,
                             dQ, dK, dV, D,
@@ -181,3 +114,75 @@ def fa_bwd_inner(Q: torch.Tensor, K: torch.Tensor, V: torch.Tensor,
                             BLOCK_SIZE_N = triton.next_power_of_2(N))   
   
     return dQ, dK, dV
+
+@triton.jit
+def fa_kernel(q_ptr, k_ptr, v_ptr, output_ptr, L_ptr, mask_ptr, qk_scale,
+                B: tl.constexpr, H: tl.constexpr, M: tl.constexpr, N: tl.constexpr,
+                stride_qb, stride_qh, stride_qm, stride_qn, # all of the matrices have the same stride
+                stride_ob, stride_oh, stride_om, stride_on, 
+                stride_Lb, stride_Lh, stride_Lm, stride_Ln, 
+                BLOCK_SIZE_M: tl.constexpr, 
+                BLOCK_SIZE_N: tl.constexpr,
+                GROUP_SIZE_M: tl.constexpr 
+            ):
+    pid_batch = tl.program_id(axis=0) 
+    pid_row = tl.program_id(axis=1)
+    pid_n = tl.program_id(axis=2)
+
+    pid_b = pid_batch // H
+    pid_h = pid_batch % H
+
+    offset_row_block = (pid_row * BLOCK_SIZE_M + tl.arange(0, BLOCK_SIZE_M)) % M
+    offset_col = (pid_n * BLOCK_SIZE_N + tl.arange(0, BLOCK_SIZE_N)) % BLOCK_SIZE_N
+    
+    offset = pid_b * stride_qb + pid_h * stride_qh + offset_row_block[:,None] * stride_qm + offset_col[None,:] *stride_qn
+    q_ptr += offset
+    mask = (offset_row_block[:,None] < M) & (offset_col[None, :] < N)
+    Q = tl.load(q_ptr, mask = mask, other = 0)
+    k_ptr += offset 
+    v_ptr += offset
+    m = tl.full((BLOCK_SIZE_M, 1), value = -torch.inf, dtype = tl.float32) # axis = 1 gives me row wise values
+    l = tl.zeros((BLOCK_SIZE_M, 1), dtype = tl.float32)    
+    O = tl.zeros((BLOCK_SIZE_M, BLOCK_SIZE_N), dtype = tl.float32)
+
+    for j in range(0, tl.cdiv(M, BLOCK_SIZE_M)):
+        K = tl.load(k_ptr, mask = (offset_row_block[:,None] < M - j *BLOCK_SIZE_M), other = 0) # has to be transposed - check if .T is fine or if stride does the trick
+        V = tl.load(v_ptr, mask = (offset_row_block[:,None] < M - j *BLOCK_SIZE_M), other = 0) 
+
+        S = tl.dot(Q,K.trans(1,0), input_precision = 'ieee') * qk_scale
+        # mask_val = tl.load(mask_ptr + mask_offset)
+        # output_val = tl.where(mask_val != 0, fill_value, x_val)
+        prev_m = m
+        m = tl.maximum(tl.max(S, axis = -1, keep_dims = True), prev_m)
+        P = tl.exp(S - m)
+        corr = tl.exp(prev_m - m)
+        l = corr * l + tl.sum(P, axis = -1, keep_dims = True) 
+        O = (corr) * O + tl.dot(P, V, input_precision = 'ieee')
+        k_ptr += BLOCK_SIZE_M * stride_qm
+        v_ptr += BLOCK_SIZE_M * stride_qm
+
+    O = (1/l) * O
+    L = m + tl.log(l)
+    output_offset =  pid_b * stride_ob + pid_h * stride_oh + offset_row_block[:,None] * stride_om + offset_col[None,:] *stride_on
+    tl.store(output_ptr + output_offset, O) #, mask = (offset_row_block[:,None] < M) & ( offset_col[None,:] < N))
+    L_offset =  pid_b * stride_Lb + pid_h * stride_Lh + offset_row_block[:,None] * stride_Lm #+ offset_col[None,:] *stride_Ln
+    tl.store(L_ptr + L_offset, L)
+
+
+def fa_fwd(Q: torch.Tensor, K: torch.Tensor, V: torch.Tensor, attn_mask: torch.Tensor):
+    B, H, M, N = Q.shape
+    output = torch.zeros_like(Q, device = 'cuda', dtype = torch.float32)
+    L = torch.zeros((B, H, M, 1), device = 'cuda', dtype = torch.float32)
+    qk_scale = 1/math.sqrt(N)
+    assert Q.is_cuda and K.is_cuda and V.is_cuda 
+    grid = lambda meta: (B*H, triton.cdiv(M, meta['BLOCK_SIZE_M']), triton.cdiv(N, meta['BLOCK_SIZE_N']))
+    fa_kernel[grid](Q, K, V, output, L, attn_mask, qk_scale,
+                    B, H, M, N,   
+                    *Q.stride(), 
+                    *output.stride(), 
+                    *L.stride(), 
+                    BLOCK_SIZE_M = max(16, triton.next_power_of_2(M)),
+                    BLOCK_SIZE_N = max(16, triton.next_power_of_2(N)),
+                    GROUP_SIZE_M = 8)   
+  
+    return output, L
